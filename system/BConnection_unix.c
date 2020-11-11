@@ -590,6 +590,9 @@ void BListener_Free (BListener *o)
     }
 }
 
+#include <arpa/inet.h>
+BConnector_fd_handler connector_fd_init = 0;
+
 int BConnector_InitFrom (BConnector *o, struct BLisCon_from from, BReactor *reactor, void *user,
                          BConnector_handler handler)
 {
@@ -645,7 +648,12 @@ int BConnector_InitFrom (BConnector *o, struct BLisCon_from from, BReactor *reac
         BLog(BLOG_ERROR, "badvpn_set_nonblocking failed");
         goto fail2;
     }
-    
+
+    // call fd handler
+    if (connector_fd_init) {
+        connector_fd_init(o, o->fd);
+    }
+
     // connect fd
     int connect_res;
     if (from.type == BLISCON_FROM_UNIX) {

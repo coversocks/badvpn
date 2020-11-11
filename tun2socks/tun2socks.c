@@ -117,6 +117,8 @@ struct {
     int udpgw_connection_buffer_size;
     int udpgw_transparent_dns;
     int socks5_udp;
+    int fd;
+    int mtu;
 } options;
 
 // TCP client
@@ -181,6 +183,10 @@ uint8_t *device_write_buf;
 SinglePacketBuffer device_read_buffer;
 PacketPassInterface device_read_interface;
 
+// direct udp
+StreamPassInterface direct_udp_pass;
+StreamRecvInterface direct_udp_recv;
+
 // UDP support mode
 enum UdpMode {UdpModeNone, UdpModeUdpgw, UdpModeSocks};
 enum UdpMode udp_mode;
@@ -215,7 +221,7 @@ LinkedList1 tcp_clients;
 // number of clients
 int num_clients;
 
-static void terminate (void);
+void terminate (void);
 static void print_help (const char *name);
 static void print_version (void);
 static int parse_arguments (int argc, char *argv[]);
@@ -252,8 +258,9 @@ static void client_socks_recv_handler_done (struct tcp_client *client, int data_
 static int client_socks_recv_send_out (struct tcp_client *client);
 static err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len);
 static void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_addr, const uint8_t *data, int data_len);
+void pipe_handler(BReactor *s, StreamRecvInterface *recv_if, StreamPassInterface *pass_if);
 
-int main (int argc, char **argv)
+int tun2socks (int argc, char **argv)
 {
     if (argc <= 0) {
         return 1;
@@ -280,22 +287,22 @@ int main (int argc, char **argv)
         return 0;
     }
     
-    // initialize logger
-    switch (options.logger) {
-        case LOGGER_STDOUT:
-            BLog_InitStdout();
-            break;
-        #ifndef BADVPN_USE_WINAPI
-        case LOGGER_SYSLOG:
-            if (!BLog_InitSyslog(options.logger_syslog_ident, options.logger_syslog_facility)) {
-                fprintf(stderr, "Failed to initialize syslog logger\n");
-                goto fail0;
-            }
-            break;
-        #endif
-        default:
-            ASSERT(0);
-    }
+//    // initialize logger
+//    switch (options.logger) {
+//        case LOGGER_STDOUT:
+//            BLog_InitStdout();
+//            break;
+//        #ifndef BADVPN_USE_WINAPI
+//        case LOGGER_SYSLOG:
+//            if (!BLog_InitSyslog(options.logger_syslog_ident, options.logger_syslog_facility)) {
+//                fprintf(stderr, "Failed to initialize syslog logger\n");
+//                goto fail0;
+//            }
+//            break;
+//        #endif
+//        default:
+//            ASSERT(0);
+//    }
     
     // configure logger channels
     for (int i = 0; i < BLOG_NUM_CHANNELS; i++) {
@@ -341,9 +348,14 @@ int main (int argc, char **argv)
         BLog(BLOG_ERROR, "BSignal_Init failed");
         goto fail2;
     }
-    
+
+    struct BTap_init_data init_data;
+    init_data.dev_type = BTAP_DEV_TUN;
+    init_data.init_type = BTAP_INIT_FD;
+    init_data.init.fd.fd = options.fd;
+    init_data.init.fd.mtu = options.mtu;
     // init TUN device
-    if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
+    if (!BTap_Init2(&device, &ss, init_data, device_error_handler, NULL)) {
         BLog(BLOG_ERROR, "BTap_Init failed");
         goto fail3;
     }
@@ -373,6 +385,8 @@ int main (int argc, char **argv)
         udp_mtu = 0;
     }
 
+  StreamPassInterface_Init()
+  pipe_handler(&ss, &direct_udp_recv, &direct_udp_pass);
     if (options.udpgw_remote_server_addr) {
         udp_mode = UdpModeUdpgw;
 
@@ -513,7 +527,8 @@ void print_help (const char *name)
         #endif
         "        [--loglevel <0-5/none/error/warning/notice/info/debug>]\n"
         "        [--channel-loglevel <channel-name> <0-5/none/error/warning/notice/info/debug>] ...\n"
-        "        [--tundev <name>]\n"
+        "        --tunfd <fd>\n"
+        "        --tunmtu <mtu>\n"
         "        --netif-ipaddr <ipaddr>\n"
         "        --netif-netmask <ipnetmask>\n"
         "        --socks-server-addr <addr>\n"
@@ -645,13 +660,27 @@ int parse_arguments (int argc, char *argv[])
             options.loglevels[channel] = loglevel;
             i += 2;
         }
-        else if (!strcmp(arg, "--tundev")) {
+        else if (!strcmp(arg, "--tunfd")) {
             if (1 >= argc - i) {
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            options.tundev = argv[i + 1];
+            if ((options.fd = atoi(argv[i + 1])) <= 0) {
+              fprintf(stderr, "%s: wrong argument\n", arg);
+              return 0;
+            }
             i++;
+        }
+        else if (!strcmp(arg, "--tunmtu")) {
+          if (1 >= argc - i) {
+            fprintf(stderr, "%s: requires an argument\n", arg);
+            return 0;
+          }
+          if ((options.mtu = atoi(argv[i + 1])) <= 0) {
+            fprintf(stderr, "%s: wrong argument\n", arg);
+            return 0;
+          }
+          i++;
         }
         else if (!strcmp(arg, "--netif-ipaddr")) {
             if (1 >= argc - i) {
@@ -1338,8 +1367,9 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
     }
     
     // init SOCKS
+    client->socks_client.mode = 1;
     if (!BSocksClient_Init(&client->socks_client,
-        socks_server_addr, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
+                           addr, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
         (BSocksClient_handler)client_socks_handler, client, &ss))
     {
         BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");

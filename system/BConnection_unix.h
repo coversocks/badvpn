@@ -85,3 +85,6 @@ struct BConnection_s {
     DebugError d_err;
     DebugObject d_obj;
 };
+
+typedef void (*BConnector_fd_handler)(struct BConnector_s *o, int fd);
+extern BConnector_fd_handler connector_fd_init;

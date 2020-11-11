@@ -86,6 +86,7 @@ struct BSocksClient_auth_info {
 };
 
 typedef struct {
+    int mode;
     const struct BSocksClient_auth_info *auth_info;
     size_t num_auth_info;
     BAddr dest_addr;

@@ -60,7 +60,7 @@ bsize_t bsize_fromsize (size_t v)
 
 bsize_t bsize_fromint (int v)
 {
-    bsize_t s = {(v < 0 || v > SIZE_MAX), v};
+    bsize_t s = {(v < 0 || v > SIZE_MAX), (size_t)v};
     return s;
 }
 
