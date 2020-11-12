@@ -590,7 +590,6 @@ void BListener_Free (BListener *o)
     }
 }
 
-#include <arpa/inet.h>
 BConnector_fd_handler connector_fd_init = 0;
 
 int BConnector_InitFrom (BConnector *o, struct BLisCon_from from, BReactor *reactor, void *user,

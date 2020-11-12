@@ -108,10 +108,13 @@ struct {
     char *netif_netmask;
     char *netif_ip6addr;
     char *socks_server_addr;
+    char *socks_server_unix;
     char *username;
     char *password;
     char *password_file;
     int append_source_to_username;
+    char *udpgw_listen_unix;
+    char *udpgw_forwarder_unix;
     char *udpgw_remote_server_addr;
     int udpgw_max_connections;
     int udpgw_connection_buffer_size;
@@ -183,16 +186,13 @@ uint8_t *device_write_buf;
 SinglePacketBuffer device_read_buffer;
 PacketPassInterface device_read_interface;
 
-// direct udp
-StreamPassInterface direct_udp_pass;
-StreamRecvInterface direct_udp_recv;
-
 // UDP support mode
-enum UdpMode {UdpModeNone, UdpModeUdpgw, UdpModeSocks};
+enum UdpMode {UdpModeNone, UdpModeDirect, UdpModeUdpgw, UdpModeSocks};
 enum UdpMode udp_mode;
 
 // udpgw client
-SocksUdpGwClient udpgw_client;
+SocksUdpGwClient udpgw_remote;
+SocksUdpGwClient udpgw_direct;
 int udp_mtu;
 
 // SOCKS5-UDP client
@@ -258,9 +258,11 @@ static void client_socks_recv_handler_done (struct tcp_client *client, int data_
 static int client_socks_recv_send_out (struct tcp_client *client);
 static err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len);
 static void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_addr, const uint8_t *data, int data_len);
-void pipe_handler(BReactor *s, StreamRecvInterface *recv_if, StreamPassInterface *pass_if);
+int udpgw_init (BReactor *ss, int argc, char **argv);
+void udpgw_free ();
+int tun_is_proxy(BAddr local_addr, BAddr remote_addr, int is_udp, int is_dns);
 
-int tun2socks (int argc, char **argv)
+int tun2socks (int argc, char **argv, int udpgw_argc, char **udpgw_argv)
 {
     if (argc <= 0) {
         return 1;
@@ -273,7 +275,7 @@ int tun2socks (int argc, char **argv)
     if (!parse_arguments(argc, argv)) {
         fprintf(stderr, "Failed to parse arguments\n");
         print_help(argv[0]);
-        goto fail0;
+        return 0;
     }
     
     // handle --help and --version
@@ -385,9 +387,7 @@ int tun2socks (int argc, char **argv)
         udp_mtu = 0;
     }
 
-  StreamPassInterface_Init()
-  pipe_handler(&ss, &direct_udp_recv, &direct_udp_pass);
-    if (options.udpgw_remote_server_addr) {
+    if (options.udpgw_forwarder_unix) {
         udp_mode = UdpModeUdpgw;
 
         // make sure our UDP payloads aren't too large for udpgw
@@ -398,8 +398,9 @@ int tun2socks (int argc, char **argv)
         }
         
         // init udpgw client
-        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
-            options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
+        udpgw_remote.socks_client.mode = 1;
+        if (!SocksUdpGwClient_InitUnix(&udpgw_remote, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+            options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, options.udpgw_forwarder_unix,
             socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
             UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
         {
@@ -414,7 +415,7 @@ int tun2socks (int argc, char **argv)
             SOCKS_UDP_SEND_BUFFER_PACKETS, UDPGW_KEEPALIVE_TIME, socks_server_addr,
             socks_auth_info, socks_num_auth_info, &ss, NULL, udp_send_packet_to_device);
     } else {
-        udp_mode = UdpModeNone;
+        udp_mode = UdpModeDirect;
     }
     
     // init lwip init job
@@ -445,11 +446,33 @@ int tun2socks (int argc, char **argv)
     
     // init number of clients
     num_clients = 0;
+
+    //init udpgw
+    if(!udpgw_init(&ss, udpgw_argc, udpgw_argv)){
+        goto fail6;
+    }
+
+    if(options.udpgw_listen_unix){
+        udpgw_direct.socks_client.mode = 1;
+        if (!SocksUdpGwClient_InitUnix(&udpgw_direct, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+                                       options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, options.udpgw_listen_unix,
+                                       socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
+                                       UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
+        {
+            BLog(BLOG_ERROR, "SocksUdpGwClient_Init failed");
+            goto fail6;
+        }
+    }
     
     // enter event loop
     BLog(BLOG_NOTICE, "entering event loop");
     BReactor_Exec(&ss);
-    
+
+    //free udpgw
+    udpgw_free();
+
+fail6:
+    ;
     // free clients
     LinkedList1Node *node;
     while (node = LinkedList1_GetFirst(&tcp_clients)) {
@@ -475,7 +498,7 @@ int tun2socks (int argc, char **argv)
 fail5:
     BPending_Free(&lwip_init_job);
     if (udp_mode == UdpModeUdpgw) {
-        SocksUdpGwClient_Free(&udpgw_client);
+        SocksUdpGwClient_Free(&udpgw_remote);
     } else if (udp_mode == UdpModeSocks) {
         SocksUdpClient_Free(&socks_udp_client);
     }
@@ -537,6 +560,7 @@ void print_help (const char *name)
         "        [--password <password>]\n"
         "        [--password-file <file>]\n"
         "        [--append-source-to-username]\n"
+        "        [--udpgw-listen-unix <path>]\n"
         "        [--udpgw-remote-server-addr <addr>]\n"
         "        [--udpgw-max-connections <number>]\n"
         "        [--udpgw-connection-buffer-size <number>]\n"
@@ -574,10 +598,13 @@ int parse_arguments (int argc, char *argv[])
     options.netif_netmask = NULL;
     options.netif_ip6addr = NULL;
     options.socks_server_addr = NULL;
+    options.socks_server_unix = NULL;
     options.username = NULL;
     options.password = NULL;
     options.password_file = NULL;
     options.append_source_to_username = 0;
+    options.udpgw_forwarder_unix = NULL;
+    options.udpgw_listen_unix = NULL;
     options.udpgw_remote_server_addr = NULL;
     options.udpgw_max_connections = DEFAULT_UDPGW_MAX_CONNECTIONS;
     options.udpgw_connection_buffer_size = DEFAULT_UDPGW_CONNECTION_BUFFER_SIZE;
@@ -714,6 +741,14 @@ int parse_arguments (int argc, char *argv[])
             options.socks_server_addr = argv[i + 1];
             i++;
         }
+        else if (!strcmp(arg, "--socks-server-unix")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            options.socks_server_unix = argv[i + 1];
+            i++;
+        }
         else if (!strcmp(arg, "--username")) {
             if (1 >= argc - i) {
                 fprintf(stderr, "%s: requires an argument\n", arg);
@@ -740,6 +775,22 @@ int parse_arguments (int argc, char *argv[])
         }
         else if (!strcmp(arg, "--append-source-to-username")) {
             options.append_source_to_username = 1;
+        }
+        else if (!strcmp(arg, "--udpgw-listen-unix")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            options.udpgw_listen_unix = argv[i + 1];
+            i++;
+        }
+        else if (!strcmp(arg, "--udpgw-forwarder-unix")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            options.udpgw_forwarder_unix = argv[i + 1];
+            i++;
         }
         else if (!strcmp(arg, "--udpgw-remote-server-addr")) {
             if (1 >= argc - i) {
@@ -1212,13 +1263,24 @@ int process_device_udp_packet (uint8_t *data, int data_len)
         BLog(BLOG_ERROR, "packet is too large, cannot send to udpgw");
         goto fail;
     }
-    
+
     // submit packet to udpgw or SOCKS UDP
     if (udp_mode == UdpModeUdpgw) {
-        SocksUdpGwClient_SubmitPacket(&udpgw_client, local_addr, remote_addr,
-                                      is_dns, data, data_len);
+        if(options.udpgw_forwarder_unix&&tun_is_proxy(local_addr, remote_addr, is_dns, 1)) {
+            SocksUdpGwClient_SubmitPacket(&udpgw_remote, local_addr, remote_addr,
+                                          is_dns, data, data_len);
+        } else if(options.udpgw_listen_unix) {
+            BLog(BLOG_ERROR, "udp package is direct");
+            SocksUdpGwClient_SubmitPacket(&udpgw_direct, local_addr, remote_addr,
+                                          is_dns, data, data_len);
+        }else{
+            BLog(BLOG_ERROR, "udp package is dropped");
+        }
     } else if (udp_mode == UdpModeSocks) {
         SocksUdpClient_SubmitPacket(&socks_udp_client, local_addr, remote_addr, data, data_len);
+    } else {
+        SocksUdpGwClient_SubmitPacket(&udpgw_direct, local_addr, remote_addr,
+                                      is_dns, data, data_len);
     }
     
     return 1;
@@ -1367,13 +1429,24 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
     }
     
     // init SOCKS
-    client->socks_client.mode = 1;
-    if (!BSocksClient_Init(&client->socks_client,
-                           addr, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
-        (BSocksClient_handler)client_socks_handler, client, &ss))
-    {
-        BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
-        goto fail1;
+    if (options.socks_server_unix&&tun_is_proxy(client->remote_addr, addr, 0, 0)) {
+        client->socks_client.mode = 0;
+        if (!BSocksClient_InitUnix(&client->socks_client,
+                               options.socks_server_unix, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
+                               (BSocksClient_handler)client_socks_handler, client, &ss))
+        {
+            BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
+            goto fail1;
+        }
+    } else {
+        client->socks_client.mode = 1;
+        if (!BSocksClient_Init(&client->socks_client,
+                               addr, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
+                               (BSocksClient_handler)client_socks_handler, client, &ss))
+        {
+            BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
+            goto fail1;
+        }
     }
     
     // init aborted and dead_aborted

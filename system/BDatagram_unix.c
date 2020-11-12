@@ -585,6 +585,8 @@ int BDatagram_AddressFamilySupported (int family)
     return 0;
 }
 
+BDatagram_fd_handler datagram_fd_init = 0;
+
 int BDatagram_Init (BDatagram *o, int family, BReactor *reactor, void *user,
                     BDatagram_handler handler)
 {
@@ -607,6 +609,11 @@ int BDatagram_Init (BDatagram *o, int family, BReactor *reactor, void *user,
     if (!badvpn_set_nonblocking(o->fd)) {
         BLog(BLOG_ERROR, "badvpn_set_nonblocking failed");
         goto fail1;
+    }
+
+    // call fd handler
+    if (datagram_fd_init) {
+        datagram_fd_init(o, o->fd);
     }
     
     // enable receiving pktinfo

@@ -69,3 +69,6 @@ struct BDatagram_s {
     DebugError d_err;
     DebugObject d_obj;
 };
+
+typedef void (*BDatagram_fd_handler)(struct BDatagram_s *o, int fd);
+extern BDatagram_fd_handler datagram_fd_init;

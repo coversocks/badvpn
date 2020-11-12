@@ -202,6 +202,58 @@ fail0:
     return 0;
 }
 
+
+int SocksUdpGwClient_InitUnix (SocksUdpGwClient *o, int udp_mtu, int max_connections, int send_buffer_size, btime_t keepalive_time,
+                           const char* socket_path, const struct BSocksClient_auth_info *auth_info, size_t num_auth_info,
+                           BAddr remote_udpgw_addr, btime_t reconnect_time, BReactor *reactor, void *user,
+                           SocksUdpGwClient_handler_received handler_received)
+{
+    // see asserts in UdpGwClient_Init
+    ASSERT(o->socks_client.mode==1 || remote_udpgw_addr.type == BADDR_TYPE_IPV4 || remote_udpgw_addr.type == BADDR_TYPE_IPV6)
+
+    // init arguments
+    o->udp_mtu = udp_mtu;
+    o->auth_info = auth_info;
+    o->num_auth_info = num_auth_info;
+    o->remote_udpgw_addr = remote_udpgw_addr;
+    o->reactor = reactor;
+    o->user = user;
+    o->handler_received = handler_received;
+
+    // init udpgw client
+    if (!UdpGwClient_Init(&o->udpgw_client, udp_mtu, max_connections, send_buffer_size, keepalive_time, o->reactor, o,
+                          (UdpGwClient_handler_servererror)udpgw_handler_servererror,
+                          (UdpGwClient_handler_received)udpgw_handler_received
+    )) {
+        goto fail0;
+    }
+
+    // set have no SOCKS
+    o->have_socks = 0;
+
+    // init SOCKS client
+    if (!BSocksClient_InitUnix(&o->socks_client, socket_path,
+                           o->auth_info, o->num_auth_info, o->remote_udpgw_addr, /*udp=*/false,
+                           (BSocksClient_handler)socks_client_handler, o, o->reactor))
+    {
+        BLog(BLOG_ERROR, "BSocksClient_Init failed");
+        goto fail1;
+    }
+
+    // set have SOCKS
+    o->have_socks = 1;
+
+    // set SOCKS not up
+    o->socks_up = 0;
+
+    DebugObject_Init(&o->d_obj);
+    return 1;
+fail1:
+    UdpGwClient_Free(&o->udpgw_client);
+fail0:
+    return 0;
+}
+
 void SocksUdpGwClient_Free (SocksUdpGwClient *o)
 {
     DebugObject_Free(&o->d_obj);

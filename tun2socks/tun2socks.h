@@ -51,5 +51,5 @@
 // STUN) could send a packet every 20 ms, so a default limit of 16 seems reasonable.
 #define SOCKS_UDP_SEND_BUFFER_PACKETS 16
 
-int tun2socks (int argc, char **argv);
+int tun2socks (int argc, char **argv, int udpgw_argc, char **udpgw_argv);
 void terminate (void);

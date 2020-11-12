@@ -130,6 +130,7 @@ struct {
     int loglevel;
     int loglevels[BLOG_NUM_CHANNELS];
     char *listen_addrs[MAX_LISTEN_ADDRS];
+    char *listen_unix;
     int num_listen_addrs;
     int udp_mtu;
     int max_clients;
@@ -161,7 +162,9 @@ BAddr dns_addr;
 btime_t last_dns_update_time;
 
 // reactor
+#ifndef UDPGW_EMBED
 BReactor ss;
+#endif
 BReactor *udpgw_ss;
 
 // listeners
@@ -172,15 +175,12 @@ int num_listeners;
 LinkedList1 clients_list;
 int num_clients;
 
-#ifdef UDPGW_MAIN
 static void print_help (const char *name);
 static void print_version (void);
 static int parse_arguments (int argc, char *argv[]);
 static int process_arguments (void);
 static void signal_handler (void *unused);
 static void listener_handler (BListener *listener);
-#endif
-
 static void client_free (struct client *client);
 static void client_logfunc (struct client *client);
 static void client_log (struct client *client, int level, const char *fmt, ...);
@@ -207,14 +207,103 @@ static struct connection * find_connection (struct client *client, uint16_t coni
 static int uint16_comparator (void *unused, uint16_t *v1, uint16_t *v2);
 static void maybe_update_dns (void);
 
+#ifdef UDPGW_EMBED
+int udpgw_init (BReactor *ss, int argc, char **argv) {
+    if (argc <= 0) {
+        return 1;
+    }
+    // parse command-line arguments
+    if (!parse_arguments(argc, argv)) {
+        fprintf(stderr, "Failed to parse arguments\n");
+        print_help(argv[0]);
+        goto fail0;
+    }
 
-#ifdef UDPGW_MAIN
+    // handle --help and --version
+    if (options.help) {
+        print_version();
+        print_help(argv[0]);
+        return 0;
+    }
+    if (options.version) {
+        print_version();
+        return 0;
+    }
+
+    BLog(BLOG_NOTICE, "initializing "GLOBAL_PRODUCT_NAME" "PROGRAM_NAME" "GLOBAL_VERSION);
+
+    // process arguments
+    if (!process_arguments()) {
+        BLog(BLOG_ERROR, "Failed to process arguments");
+        goto fail0;
+    }
+
+    // compute MTUs
+    udpgw_mtu = udpgw_compute_mtu(options.udp_mtu);
+    if (udpgw_mtu < 0 || udpgw_mtu > PACKETPROTO_MAXPAYLOAD) {
+        udpgw_mtu = PACKETPROTO_MAXPAYLOAD;
+    }
+    pp_mtu = udpgw_mtu + sizeof(struct packetproto_header);
+
+    // init DNS forwarding
+    BAddr_InitNone(&dns_addr);
+    last_dns_update_time = INT64_MIN;
+    maybe_update_dns();
+
+    // init reactor
+    udpgw_ss = ss;
+
+    // initialize listeners
+    num_listeners = 0;
+    while (num_listeners < num_listen_addrs) {
+        if (!BListener_Init(&listeners[num_listeners], listen_addrs[num_listeners], udpgw_ss, &listeners[num_listeners], (BListener_handler) listener_handler)) {
+            BLog(BLOG_ERROR, "Listener_Init failed");
+            goto fail3;
+        }
+        BLog(BLOG_INFO, "Listener on %s", options.listen_addrs[0]);
+        num_listeners++;
+    }
+    if(options.listen_unix){
+        BLog(BLOG_NOTICE, "listen unix on %s ", options.listen_unix);
+        if (!BListener_InitUnix(&listeners[num_listeners], options.listen_unix, udpgw_ss, &listeners[num_listeners], (BListener_handler) listener_handler)) {
+          BLog(BLOG_ERROR, "Listener_Init failed");
+          goto fail3;
+        }
+        num_listeners++;
+    }
+
+    // init clients list
+    LinkedList1_Init(&clients_list);
+    num_clients = 0;
+    return 1;
+  fail3:
+    // free listeners
+    while (num_listeners > 0) {
+        num_listeners--;
+        BListener_Free(&listeners[num_listeners]);
+    }
+  fail0:
+    return 0;
+}
+
+void udpgw_free () {
+    // free clients
+    while (!LinkedList1_IsEmpty(&clients_list)) {
+        struct client *client = UPPER_OBJECT(LinkedList1_GetFirst(&clients_list), struct client, clients_list_node);
+        client_free(client);
+    }
+    // free listeners
+    while (num_listeners > 0) {
+        num_listeners--;
+        BListener_Free(&listeners[num_listeners]);
+    }
+}
+#else
 int main (int argc, char **argv)
 {
     if (argc <= 0) {
         return 1;
     }
-
     // open standard streams
     open_standard_streams();
 
@@ -349,6 +438,7 @@ fail0:
 
     return 1;
 }
+#endif
 
 void print_help (const char *name)
 {
@@ -367,6 +457,7 @@ void print_help (const char *name)
         "        [--loglevel <0-5/none/error/warning/notice/info/debug>]\n"
         "        [--channel-loglevel <channel-name> <0-5/none/error/warning/notice/info/debug>] ...\n"
         "        [--listen-addr <addr>] ...\n"
+        "        [--listen-unix <path>] ...\n"
         "        [--udp-mtu <bytes>]\n"
         "        [--max-clients <number>]\n"
         "        [--max-connections-for-client <number>]\n"
@@ -498,6 +589,14 @@ int parse_arguments (int argc, char *argv[])
             options.listen_addrs[options.num_listen_addrs] = argv[i + 1];
             options.num_listen_addrs++;
             i++;
+        }
+        else if (!strcmp(arg, "--listen-unix")) {
+          if (1 >= argc - i) {
+            fprintf(stderr, "%s: requires an argument\n", arg);
+            return 0;
+          }
+          options.listen_unix = argv[i + 1];
+          i++;
         }
         else if (!strcmp(arg, "--udp-mtu")) {
             if (1 >= argc - i) {
@@ -717,93 +816,6 @@ fail2:
 fail1:
     free(client);
 fail0:
-    return;
-}
-#endif
-
-void pipe_handler(BReactor *s, StreamRecvInterface *recv_if, StreamPassInterface *pass_if)
-{
-    udpgw_ss = s;
-    options.help = 0;
-    options.version = 0;
-    options.logger = LOGGER_STDOUT;
-    options.loglevel = -1;
-    for (int i = 0; i < BLOG_NUM_CHANNELS; i++) {
-        options.loglevels[i] = -1;
-    }
-    options.num_listen_addrs = 0;
-    options.udp_mtu = DEFAULT_UDP_MTU;
-    options.max_clients = DEFAULT_MAX_CLIENTS;
-    options.max_connections_for_client = DEFAULT_MAX_CONNECTIONS_FOR_CLIENT;
-    options.client_socket_sndbuf = CLIENT_DEFAULT_SOCKET_SEND_BUFFER;
-    options.local_udp_num_ports = -1;
-    options.local_udp_ip6_num_ports = -1;
-    options.unique_local_ports = 0;
-    //
-    if (num_clients == options.max_clients) {
-        BLog(BLOG_ERROR, "maximum number of clients reached");
-        goto fail0;
-    }
-
-    // allocate structure
-    struct client *client = (struct client *)malloc(sizeof(*client));
-    if (!client) {
-        BLog(BLOG_ERROR, "malloc failed");
-        goto fail0;
-    }
-
-    // init recv interface
-    PacketPassInterface_Init(&client->recv_if, udpgw_mtu, (PacketPassInterface_handler_send)client_recv_if_handler_send, client, BReactor_PendingGroup(udpgw_ss));
-
-    // init recv decoder
-    if (!PacketProtoDecoder_Init(&client->recv_decoder, recv_if, &client->recv_if, BReactor_PendingGroup(udpgw_ss), client,
-                                 (PacketProtoDecoder_handler_error)client_decoder_handler_error
-    )) {
-        BLog(BLOG_ERROR, "PacketProtoDecoder_Init failed");
-        goto fail2;
-    }
-
-    // init send sender
-    PacketStreamSender_Init(&client->send_sender, pass_if, pp_mtu, BReactor_PendingGroup(udpgw_ss));
-
-    // init send queue
-    if (!PacketPassFairQueue_Init(&client->send_queue, PacketStreamSender_GetInput(&client->send_sender), BReactor_PendingGroup(udpgw_ss), 0, 1)) {
-        BLog(BLOG_ERROR, "PacketPassFairQueue_Init failed");
-        goto fail3;
-    }
-
-    // init connections tree
-    BAVL_Init(&client->connections_tree, OFFSET_DIFF(struct connection, conid, connections_tree_node), (BAVL_comparator)uint16_comparator, NULL);
-
-    // init connections list
-    LinkedList1_Init(&client->connections_list);
-
-    // set zero connections
-    client->num_connections = 0;
-
-    // init closing connections list
-    LinkedList1_Init(&client->closing_connections_list);
-
-    // insert to clients list
-    LinkedList1_Append(&clients_list, &client->clients_list_node);
-    num_clients++;
-
-    client_log(client, BLOG_INFO, "connected");
-
-    return;
-
-  fail3:
-    PacketStreamSender_Free(&client->send_sender);
-    PacketProtoDecoder_Free(&client->recv_decoder);
-  fail2:
-    PacketPassInterface_Free(&client->recv_if);
-    BReactor_RemoveTimer(udpgw_ss, &client->disconnect_timer);
-    BConnection_RecvAsync_Free(&client->con);
-    BConnection_SendAsync_Free(&client->con);
-    BConnection_Free(&client->con);
-  fail1:
-    free(client);
-  fail0:
     return;
 }
 
