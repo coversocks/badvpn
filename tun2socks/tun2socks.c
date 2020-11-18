@@ -265,7 +265,7 @@ static err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len);
 static void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_addr, const uint8_t *data, int data_len);
 int udpgw_init (BReactor *ss, int argc, char **argv);
 void udpgw_free ();
-int tun_is_proxy(BAddr local_addr, BAddr remote_addr, int is_udp, int is_dns);
+int tun_is_proxy(BAddr local_addr, BAddr remote_addr, int is_udp);
 
 int tun2socks (int argc, char **argv, int udpgw_argc, char **udpgw_argv)
 {
@@ -1329,21 +1329,20 @@ int process_device_udp_packet (uint8_t *data, int data_len)
 
     // submit packet to udpgw or SOCKS UDP
     if (udp_mode == UdpModeUdpgw) {
-        if((options.udpgw_forwarder_unix||options.udpgw_forwarder_addr)&&tun_is_proxy(local_addr, remote_addr, is_dns, 1)) {
+        if((options.udpgw_forwarder_unix||options.udpgw_forwarder_addr)&&tun_is_proxy(local_addr, remote_addr, 1)) {
             SocksUdpGwClient_SubmitPacket(&udpgw_remote, local_addr, remote_addr,
-                                          is_dns, data, data_len);
+                                          0, data, data_len);
         } else if(options.udpgw_listen_unix||options.udpgw_listen_addr) {
-            BLog(BLOG_ERROR, "udp package is direct");
             SocksUdpGwClient_SubmitPacket(&udpgw_direct, local_addr, remote_addr,
-                                          is_dns, data, data_len);
+                                          0, data, data_len);
         }else{
-            BLog(BLOG_ERROR, "udp package is dropped");
+            BLog(BLOG_WARNING, "udp package is dropped");
         }
     } else if (udp_mode == UdpModeSocks) {
         SocksUdpClient_SubmitPacket(&socks_udp_client, local_addr, remote_addr, data, data_len);
     } else {
         SocksUdpGwClient_SubmitPacket(&udpgw_direct, local_addr, remote_addr,
-                                      is_dns, data, data_len);
+                                      0, data, data_len);
     }
     
     return 1;
@@ -1492,7 +1491,7 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
     }
     
     // init SOCKS
-    if (options.socks_server_unix&&tun_is_proxy(client->remote_addr, addr, 0, 0)) {
+    if (options.socks_server_unix&&tun_is_proxy(client->remote_addr, addr, 0)) {
         client->socks_client.mode = 0;
         if (!BSocksClient_InitUnix(&client->socks_client,
                                options.socks_server_unix, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,

@@ -1543,7 +1543,7 @@ int uint16_comparator (void *unused, uint16_t *v1, uint16_t *v2)
 
 void maybe_update_dns (void)
 {
-#ifdef UDPGW_MAIN
+#ifndef UDPGW_EMBED
 #ifndef BADVPN_USE_WINAPI
     btime_t now = btime_gettime();
     if (now < btime_add(last_dns_update_time, DNS_UPDATE_TIME)) {
