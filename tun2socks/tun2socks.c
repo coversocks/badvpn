@@ -1500,6 +1500,15 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
             BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
             goto fail1;
         }
+    } else if (options.socks_server_addr&&tun_is_proxy(client->remote_addr, addr, 0)) {
+        client->socks_client.mode = 0;
+        if (!BSocksClient_Init(&client->socks_client,
+                                   socks_server_addr, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
+                                   (BSocksClient_handler)client_socks_handler, client, &ss))
+        {
+            BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
+            goto fail1;
+        }
     } else {
         client->socks_client.mode = 1;
         if (!BSocksClient_Init(&client->socks_client,
