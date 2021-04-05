@@ -58,6 +58,10 @@ int SocksUdpGwClient_Init (SocksUdpGwClient *o, int udp_mtu, int max_connections
                            BAddr socks_server_addr, const struct BSocksClient_auth_info *auth_info, size_t num_auth_info,
                            BAddr remote_udpgw_addr, btime_t reconnect_time, BReactor *reactor, void *user,
                            SocksUdpGwClient_handler_received handler_received) WARN_UNUSED;
+int SocksUdpGwClient_InitUnix (SocksUdpGwClient *o, int udp_mtu, int max_connections, int send_buffer_size, btime_t keepalive_time,
+                           const char* socket_path, const struct BSocksClient_auth_info *auth_info, size_t num_auth_info,
+                           BAddr remote_udpgw_addr, btime_t reconnect_time, BReactor *reactor, void *user,
+                           SocksUdpGwClient_handler_received handler_received) WARN_UNUSED;
 void SocksUdpGwClient_Free (SocksUdpGwClient *o);
 void SocksUdpGwClient_SubmitPacket (SocksUdpGwClient *o, BAddr local_addr, BAddr remote_addr, int is_dns, const uint8_t *data, int data_len);
 

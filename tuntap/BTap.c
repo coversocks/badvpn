@@ -46,13 +46,13 @@
     #include <sys/stat.h>
     #include <sys/socket.h>
     #include <net/if.h>
-    #include <net/if_arp.h>
+    // #include <net/if_arp.h>
     #ifdef BADVPN_LINUX
         #include <linux/if_tun.h>
     #endif
     #ifdef BADVPN_FREEBSD
-        #include <net/if_tun.h>
-        #include <net/if_tap.h>
+        // #include <net/if_tun.h>
+        // #include <net/if_tap.h>
     #endif
 #endif
 
@@ -332,7 +332,7 @@ fail0:
             o->fd = init_data.init.fd.fd;
             o->frame_mtu = init_data.init.fd.mtu;
         } break;
-        
+        #if defined(BADVPN_LINUX)
         case BTAP_INIT_STRING: {
             char devname_real[IFNAMSIZ];
             
@@ -429,7 +429,7 @@ fail0:
             
             close(sock);
         } break;
-        
+        #endif
         default: ASSERT(0);
     }
         

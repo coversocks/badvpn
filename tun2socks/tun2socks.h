@@ -40,7 +40,7 @@
 #define UDPGW_RECONNECT_TIME 5000
 
 // udpgw keepalive sending interval
-#define UDPGW_KEEPALIVE_TIME 10000
+#define UDPGW_KEEPALIVE_TIME 15000
 
 // option to override the destination addresses to give the SOCKS server
 //#define OVERRIDE_DEST_ADDR "10.111.0.2:2000"
@@ -50,3 +50,6 @@
 // or far-away SOCKS server could require 300 ms to connect, and a chatty client (e.g.
 // STUN) could send a packet every 20 ms, so a default limit of 16 seems reasonable.
 #define SOCKS_UDP_SEND_BUFFER_PACKETS 16
+
+int tun2socks (int argc, char **argv, int udpgw_argc, char **udpgw_argv);
+void terminate (void);

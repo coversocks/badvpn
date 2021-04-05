@@ -108,6 +108,7 @@ struct {
     char *netif_netmask;
     char *netif_ip6addr;
     char *socks_server_addr;
+    char *socks_server_unix;
     char *username;
     char *password;
     char *password_file;
@@ -117,6 +118,8 @@ struct {
     int udpgw_connection_buffer_size;
     int udpgw_transparent_dns;
     int socks5_udp;
+    int fd;
+    int mtu;
 } options;
 
 // TCP client
@@ -215,7 +218,7 @@ LinkedList1 tcp_clients;
 // number of clients
 int num_clients;
 
-static void terminate (void);
+void terminate (void);
 static void print_help (const char *name);
 static void print_version (void);
 static int parse_arguments (int argc, char *argv[]);
@@ -253,7 +256,7 @@ static int client_socks_recv_send_out (struct tcp_client *client);
 static err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len);
 static void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_addr, const uint8_t *data, int data_len);
 
-int main (int argc, char **argv)
+int tun2socks (int argc, char **argv, int udpgw_argc, char **udpgw_argv)
 {
     if (argc <= 0) {
         return 1;
@@ -266,7 +269,7 @@ int main (int argc, char **argv)
     if (!parse_arguments(argc, argv)) {
         fprintf(stderr, "Failed to parse arguments\n");
         print_help(argv[0]);
-        goto fail0;
+        return 0;
     }
     
     // handle --help and --version
@@ -280,22 +283,22 @@ int main (int argc, char **argv)
         return 0;
     }
     
-    // initialize logger
-    switch (options.logger) {
-        case LOGGER_STDOUT:
-            BLog_InitStdout();
-            break;
-        #ifndef BADVPN_USE_WINAPI
-        case LOGGER_SYSLOG:
-            if (!BLog_InitSyslog(options.logger_syslog_ident, options.logger_syslog_facility)) {
-                fprintf(stderr, "Failed to initialize syslog logger\n");
-                goto fail0;
-            }
-            break;
-        #endif
-        default:
-            ASSERT(0);
-    }
+//    // initialize logger
+//    switch (options.logger) {
+//        case LOGGER_STDOUT:
+//            BLog_InitStdout();
+//            break;
+//        #ifndef BADVPN_USE_WINAPI
+//        case LOGGER_SYSLOG:
+//            if (!BLog_InitSyslog(options.logger_syslog_ident, options.logger_syslog_facility)) {
+//                fprintf(stderr, "Failed to initialize syslog logger\n");
+//                goto fail0;
+//            }
+//            break;
+//        #endif
+//        default:
+//            ASSERT(0);
+//    }
     
     // configure logger channels
     for (int i = 0; i < BLOG_NUM_CHANNELS; i++) {
@@ -341,9 +344,14 @@ int main (int argc, char **argv)
         BLog(BLOG_ERROR, "BSignal_Init failed");
         goto fail2;
     }
-    
+
+    struct BTap_init_data init_data;
+    init_data.dev_type = BTAP_DEV_TUN;
+    init_data.init_type = BTAP_INIT_FD;
+    init_data.init.fd.fd = options.fd;
+    init_data.init.fd.mtu = options.mtu;
     // init TUN device
-    if (!BTap_Init(&device, &ss, options.tundev, device_error_handler, NULL, 1)) {
+    if (!BTap_Init2(&device, &ss, init_data, device_error_handler, NULL)) {
         BLog(BLOG_ERROR, "BTap_Init failed");
         goto fail3;
     }
@@ -384,13 +392,24 @@ int main (int argc, char **argv)
         }
         
         // init udpgw client
-        if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
-            options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
-            socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
-            UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
-        {
-            BLog(BLOG_ERROR, "SocksUdpGwClient_Init failed");
-            goto fail4a;
+        if(options.socks_server_unix){
+            if (!SocksUdpGwClient_InitUnix(&udpgw_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+                options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, options.socks_server_unix,
+                socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
+                UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
+            {
+                BLog(BLOG_ERROR, "SocksUdpGwClient_Init failed");
+                goto fail4a;
+            }
+        } else {
+            if (!SocksUdpGwClient_Init(&udpgw_client, udp_mtu, DEFAULT_UDPGW_MAX_CONNECTIONS,
+                options.udpgw_connection_buffer_size, UDPGW_KEEPALIVE_TIME, socks_server_addr,
+                socks_auth_info, socks_num_auth_info, udpgw_remote_server_addr,
+                UDPGW_RECONNECT_TIME, &ss, NULL, udp_send_packet_to_device))
+            {
+                BLog(BLOG_ERROR, "SocksUdpGwClient_Init failed");
+                goto fail4a;
+            }
         }
     } else if (options.socks5_udp) {
         udp_mode = UdpModeSocks;
@@ -513,7 +532,8 @@ void print_help (const char *name)
         #endif
         "        [--loglevel <0-5/none/error/warning/notice/info/debug>]\n"
         "        [--channel-loglevel <channel-name> <0-5/none/error/warning/notice/info/debug>] ...\n"
-        "        [--tundev <name>]\n"
+        "        --tunfd <fd>\n"
+        "        --tunmtu <mtu>\n"
         "        --netif-ipaddr <ipaddr>\n"
         "        --netif-netmask <ipnetmask>\n"
         "        --socks-server-addr <addr>\n"
@@ -559,6 +579,7 @@ int parse_arguments (int argc, char *argv[])
     options.netif_netmask = NULL;
     options.netif_ip6addr = NULL;
     options.socks_server_addr = NULL;
+    options.socks_server_unix = NULL;
     options.username = NULL;
     options.password = NULL;
     options.password_file = NULL;
@@ -645,13 +666,27 @@ int parse_arguments (int argc, char *argv[])
             options.loglevels[channel] = loglevel;
             i += 2;
         }
-        else if (!strcmp(arg, "--tundev")) {
+        else if (!strcmp(arg, "--tunfd")) {
             if (1 >= argc - i) {
                 fprintf(stderr, "%s: requires an argument\n", arg);
                 return 0;
             }
-            options.tundev = argv[i + 1];
+            if ((options.fd = atoi(argv[i + 1])) <= 0) {
+              fprintf(stderr, "%s: wrong argument\n", arg);
+              return 0;
+            }
             i++;
+        }
+        else if (!strcmp(arg, "--tunmtu")) {
+          if (1 >= argc - i) {
+            fprintf(stderr, "%s: requires an argument\n", arg);
+            return 0;
+          }
+          if ((options.mtu = atoi(argv[i + 1])) <= 0) {
+            fprintf(stderr, "%s: wrong argument\n", arg);
+            return 0;
+          }
+          i++;
         }
         else if (!strcmp(arg, "--netif-ipaddr")) {
             if (1 >= argc - i) {
@@ -683,6 +718,14 @@ int parse_arguments (int argc, char *argv[])
                 return 0;
             }
             options.socks_server_addr = argv[i + 1];
+            i++;
+        }
+        else if (!strcmp(arg, "--socks-server-unix")) {
+            if (1 >= argc - i) {
+                fprintf(stderr, "%s: requires an argument\n", arg);
+                return 0;
+            }
+            options.socks_server_unix = argv[i + 1];
             i++;
         }
         else if (!strcmp(arg, "--username")) {
@@ -768,8 +811,8 @@ int parse_arguments (int argc, char *argv[])
         return 0;
     }
     
-    if (!options.socks_server_addr) {
-        fprintf(stderr, "--socks-server-addr is required\n");
+    if (!options.socks_server_addr && !options.socks_server_unix) {
+        fprintf(stderr, "--socks-server-addr or --socks-server-addr is required\n");
         return 0;
     }
     
@@ -821,7 +864,7 @@ int process_arguments (void)
     }
     
     // resolve SOCKS server address
-    if (!BAddr_Parse2(&socks_server_addr, options.socks_server_addr, NULL, 0, 0)) {
+    if (options.socks_server_addr&&!BAddr_Parse2(&socks_server_addr, options.socks_server_addr, NULL, 0, 0)) {
         BLog(BLOG_ERROR, "socks server addr: BAddr_Parse2 failed");
         return 0;
     }
@@ -1338,12 +1381,22 @@ err_t listener_accept_func (void *arg, struct tcp_pcb *newpcb, err_t err)
     }
     
     // init SOCKS
-    if (!BSocksClient_Init(&client->socks_client,
-        socks_server_addr, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
-        (BSocksClient_handler)client_socks_handler, client, &ss))
-    {
-        BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
-        goto fail1;
+    if(options.socks_server_unix) {
+        if (!BSocksClient_InitUnix(&client->socks_client,
+            options.socks_server_unix, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
+            (BSocksClient_handler)client_socks_handler, client, &ss))
+        {
+            BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
+            goto fail1;
+        }
+    } else if(options.socks_server_addr) {
+        if (!BSocksClient_Init(&client->socks_client,
+            socks_server_addr, socks_auth_info, socks_num_auth_info, addr, /*udp=*/false,
+            (BSocksClient_handler)client_socks_handler, client, &ss))
+        {
+            BLog(BLOG_ERROR, "listener accept: BSocksClient_Init failed");
+            goto fail1;
+        }
     }
     
     // init aborted and dead_aborted

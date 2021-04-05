@@ -290,7 +290,7 @@ static void do_send (BDatagram *o)
 #ifdef BADVPN_FREEBSD
             memset(cmsg, 0, CMSG_SPACE(sizeof(struct in_addr)));
             cmsg->cmsg_level = IPPROTO_IP;
-            cmsg->cmsg_type = IP_SENDSRCADDR;
+            cmsg->cmsg_type = IP_PKTINFO;
             cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_addr));
             struct in_addr *addrinfo = (struct in_addr *)CMSG_DATA(cmsg);
             addrinfo->s_addr = o->send.local_addr.ipv4;

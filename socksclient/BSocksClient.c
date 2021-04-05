@@ -621,6 +621,48 @@ fail0:
     return 0;
 }
 
+int BSocksClient_InitUnix (BSocksClient *o, const char* socket_path,
+                       const struct BSocksClient_auth_info *auth_info, size_t num_auth_info, BAddr dest_addr,
+                       bool udp, BSocksClient_handler handler, void *user, BReactor *reactor)
+{
+#ifndef NDEBUG
+    for (size_t i = 0; i < num_auth_info; i++) {
+        ASSERT(auth_info[i].auth_type == SOCKS_METHOD_NO_AUTHENTICATION_REQUIRED ||
+            auth_info[i].auth_type == SOCKS_METHOD_USERNAME_PASSWORD)
+    }
+#endif
+
+    // init arguments
+    o->auth_info = auth_info;
+    o->num_auth_info = num_auth_info;
+    o->dest_addr = dest_addr;
+    o->udp = udp;
+    o->handler = handler;
+    o->user = user;
+    o->reactor = reactor;
+
+    // init continue_job
+    BPending_Init(&o->continue_job, BReactor_PendingGroup(o->reactor),
+                  (BPending_handler)continue_job_handler, o);
+
+    // init connector
+    if (!BConnector_InitUnix(&o->connector, socket_path, o->reactor, o, (BConnector_handler)connector_handler)) {
+        BLog(BLOG_ERROR, "BConnector_Init failed");
+        goto fail0;
+    }
+
+    // set state
+    o->state = STATE_CONNECTING;
+
+    DebugError_Init(&o->d_err, BReactor_PendingGroup(o->reactor));
+    DebugObject_Init(&o->d_obj);
+    return 1;
+
+  fail0:
+    BPending_Free(&o->continue_job);
+    return 0;
+}
+
 void BSocksClient_Free (BSocksClient *o)
 {
     DebugObject_Free(&o->d_obj);
