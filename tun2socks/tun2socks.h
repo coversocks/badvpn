@@ -24,6 +24,13 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef void (*_t2s_log_func)(int channel, int level, const char *msg);
+typedef void (*_t2s_free_func)(void);
+
 // name of the program
 #define PROGRAM_NAME "tun2socks"
 
@@ -51,5 +58,10 @@
 // STUN) could send a packet every 20 ms, so a default limit of 16 seems reasonable.
 #define SOCKS_UDP_SEND_BUFFER_PACKETS 16
 
-int tun2socks (int argc, char **argv, int udpgw_argc, char **udpgw_argv);
-void terminate (void);
+void t2s_log_init(_t2s_log_func log_func, _t2s_free_func free_func);
+int t2s_execute(int argc, char **argv);
+void t2s_terminate(void);
+
+#ifdef __cplusplus
+}
+#endif

@@ -209,7 +209,7 @@ int SocksUdpGwClient_InitUnix (SocksUdpGwClient *o, int udp_mtu, int max_connect
                            SocksUdpGwClient_handler_received handler_received)
 {
     // see asserts in UdpGwClient_Init
-    ASSERT(o->socks_client.mode==1 || remote_udpgw_addr.type == BADDR_TYPE_IPV4 || remote_udpgw_addr.type == BADDR_TYPE_IPV6)
+    ASSERT(remote_udpgw_addr.type == BADDR_TYPE_IPV4 || remote_udpgw_addr.type == BADDR_TYPE_IPV6)
 
     // init arguments
     o->udp_mtu = udp_mtu;

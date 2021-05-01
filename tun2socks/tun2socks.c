@@ -218,7 +218,7 @@ LinkedList1 tcp_clients;
 // number of clients
 int num_clients;
 
-void terminate (void);
+void t2s_terminate (void);
 static void print_help (const char *name);
 static void print_version (void);
 static int parse_arguments (int argc, char *argv[]);
@@ -256,7 +256,12 @@ static int client_socks_recv_send_out (struct tcp_client *client);
 static err_t client_sent_func (void *arg, struct tcp_pcb *tpcb, u16_t len);
 static void udp_send_packet_to_device (void *unused, BAddr local_addr, BAddr remote_addr, const uint8_t *data, int data_len);
 
-int tun2socks (int argc, char **argv, int udpgw_argc, char **udpgw_argv)
+void t2s_log_init(_t2s_log_func log_func, _t2s_free_func free_func)
+{
+    BLog_Init(log_func, free_func);
+}
+
+int t2s_execute (int argc, char **argv)
 {
     if (argc <= 0) {
         return 1;
@@ -503,7 +508,7 @@ fail0:
     return 1;
 }
 
-void terminate (void)
+void t2s_terminate (void)
 {
     ASSERT(!quitting)
     
@@ -911,7 +916,7 @@ void signal_handler (void *unused)
     
     BLog(BLOG_NOTICE, "termination requested");
     
-    terminate();
+    t2s_terminate();
 }
 
 BAddr baddr_from_lwip (const ip_addr_t *ip_addr, uint16_t port_hostorder)
@@ -1033,7 +1038,7 @@ void lwip_init_job_hadler (void *unused)
     
 fail:
     if (!quitting) {
-        terminate();
+        t2s_terminate();
     }
 }
 
@@ -1077,7 +1082,7 @@ void device_error_handler (void *unused)
     
     BLog(BLOG_ERROR, "device error");
     
-    terminate();
+    t2s_terminate();
     return;
 }
 

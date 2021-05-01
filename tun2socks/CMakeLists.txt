@@ -1,7 +1,6 @@
-cmake_minimum_required(VERSION 3.10.2)
-project("tun2socks")
+
 set(BADVPN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../)
-set(tun2socks_DEFS -D__APPLE_USE_RFC_3542 -DBADVPN_THREAD_SAFE=0 -DBADVPN_FREEBSD -DBADVPN_BREACTOR_BADVPN -D_GNU_SOURCE -DBADVPN_USE_KEVENT -DBADVPN_LITTLE_ENDIAN -DUDPGW_EMBED)
+set(tun2socks_DEFS -D__APPLE_USE_RFC_3542 -DBADVPN_THREAD_SAFE=0 -DBADVPN_LINUX -DBADVPN_BREACTOR_BADVPN -D_GNU_SOURCE -DBADVPN_USE_EPOLL -DBADVPN_USE_SIGNALFD -DBADVPN_LITTLE_ENDIAN -DUDPGW_EMBED)
 set(tun2socks_INCLUDES
         "${BADVPN_DIR}"
         "${BADVPN_DIR}/lwip/src/include/ipv4"
@@ -67,7 +66,6 @@ set(tun2socks_SRCS
         "${BADVPN_DIR}/flowextra/PacketPassInactivityMonitor.c"
         "${BADVPN_DIR}/tun2socks/SocksUdpGwClient.c"
         "${BADVPN_DIR}/udpgw_client/UdpGwClient.c"
-        "${BADVPN_DIR}/udpgw/udpgw.c"
         "${BADVPN_DIR}/socks_udp_client/SocksUdpClient.c"
         )
 add_library(tun2socks STATIC ${tun2socks_SRCS})
